@@ -30,6 +30,9 @@ class App(tk.Tk):
         super().__init__()
         self.title("CIS PaintKit — Livery Builder")
         self.geometry("1480x980"); self.minsize(1200, 820)
+        self._last_color_base = None  # PIL.Image (RGB), colorized base w/o text
+        self._last_color_mode = None  # 'fit' | 'crop'
+        self._last_color_rect = None  # (x0,y0,x1,y1) when mode=='crop'
 
         # images / preview cache
         self._images = None
@@ -84,6 +87,68 @@ class App(tk.Tk):
         # auto set project root to this script folder and scan
         self._auto_set_project_root_and_scan()
         self.after(200, self._startup_flow)
+
+    # --- Fuselage placement helpers ---
+
+    def _clamp(self, v: int, a: int, b: int) -> int:
+        return a if v < a else b if v > b else v
+
+    def _is_current_fuselage(self) -> bool:
+        if not self.current_asset_key:
+            return False
+        asset = next((a for a in self.assets if a['key'] == self.current_asset_key), None)
+        return bool(asset) and self._asset_role(asset) == 'FUSELAGE'
+
+    def _fuselage_rect(self, size: Tuple[int, int]) -> Tuple[int, int, int, int]:
+        """Authoritative rect (top-left coords)."""
+        W, H = size
+        x1, y1, x2, y2 = 3058, 60, 3850, 1920
+        x1 = self._clamp(x1, 0, max(0, W - 1));
+        x2 = self._clamp(x2, 0, max(0, W - 1))
+        y1 = self._clamp(y1, 0, max(0, H - 1));
+        y2 = self._clamp(y2, 0, max(0, H - 1))
+        if x2 < x1: x1, x2 = x2, x1
+        if y2 < y1: y1, y2 = y2, y1
+        return (x1, y1, x2, y2)
+
+    def _apply_fuselage_parent_move(self, nx: float, ny: float) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+        """Clamp parent to lower half & mirror child vertically into upper half."""
+        if self._last_full_composite is not None:
+            W, H = self._last_full_composite.size
+        elif self._images is not None:
+            W, H = self._images['albedo_full'].size
+        else:
+            return (nx, ny), (nx, 1.0 - ny)
+
+        x = int(round(nx * W));
+        y = int(round(ny * H))
+        x1, y1, x2, y2 = self._fuselage_rect((W, H))
+        mid = (y1 + y2) // 2
+        x = self._clamp(x, x1, x2)
+        y = self._clamp(y, mid, y2)  # parent in lower half
+        y_child = (y1 + y2) - y  # vertical mirror across midline
+        y_child = self._clamp(y_child, y1, mid)  # child in upper half
+        return ((x / W, y / H), (x / W, y_child / H))
+
+    def _ensure_fuselage_defaults(self) -> None:
+        """First time on Fuselage: center in halves + set default size=240."""
+        if not (self._images and self._is_current_fuselage() and self.current_asset_key):
+            return
+        st = self.asset_states.get(self.current_asset_key, {})
+        if st.get('text_props'):
+            return
+        W, H = self._images['albedo_full'].size
+        x1, y1, x2, y2 = self._fuselage_rect((W, H))
+        mid = (y1 + y2) // 2
+        cx = (x1 + x2) // 2
+        cy_lower = (mid + y2) // 2
+        cy_upper = (y1 + mid) // 2
+        self.text_overlay.font_size_px = max(1, 240)
+        self.text_overlay.pos_norm = (cx / W, cy_lower / H)
+        self.text_overlay.child_pos_norm = (cx / W, cy_upper / H)
+        st['text_props'] = self._capture_text_props()
+        st['text_pos'] = self._capture_text_pos()
+        self.asset_states[self.current_asset_key] = st
 
     # ---------- Safe getters & validators ----------
     def _safe_get_int(self, var, fallback: int) -> int:
@@ -154,6 +219,7 @@ class App(tk.Tk):
 
         pf = ttk.LabelFrame(self, text="Preview (scaled)"); pf.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         self.preview_label = ttk.Label(pf, anchor="center"); self.preview_label.pack(fill=tk.BOTH, expand=True)
+        self.preview_label.bind("<Configure>", self._on_preview_label_configure)
         self.preview_label.bind("<Button-1>", self._on_mouse_down)
         self.preview_label.bind("<B1-Motion>", self._on_mouse_drag)
         self.preview_label.bind("<ButtonRelease-1>", self._on_mouse_up)
@@ -346,7 +412,20 @@ class App(tk.Tk):
         c = colorchooser.askcolor(color=self.text_overlay.stroke_hex, title="Pick stroke color")
         if c and c[1]: self.text_overlay.stroke_hex = c[1]; self.stroke_chip.configure(bg=self.text_overlay.stroke_hex); self._schedule_preview()
 
-    def _center_text_parent(self): self.text_overlay.pos_norm = (0.5, 0.5); self._schedule_preview()
+    def _center_text_parent(self):
+        if self._images and self._is_current_fuselage():
+            W, H = self._images['albedo_full'].size
+            x1, y1, x2, y2 = self._fuselage_rect((W, H))
+            mid = (y1 + y2) // 2
+            cx = (x1 + x2) // 2
+            cy_lower = (mid + y2) // 2
+            cy_upper = (y1 + mid) // 2
+            self.text_overlay.pos_norm = (cx / W, cy_lower / H)
+            self.text_overlay.child_pos_norm = (cx / W, cy_upper / H)
+        else:
+            self.text_overlay.pos_norm = (0.5, 0.5)
+        self._schedule_preview()
+
     def _center_text_child(self): self.text_overlay.child_pos_norm = (0.5, 0.5); self._schedule_preview()
 
     # helpers -------------------------------------------------------------
@@ -402,7 +481,12 @@ class App(tk.Tk):
         }
         self._update_mask2_tabs(m2_img)
         self.status_var.set(f"Loaded: {os.path.basename(a)} + Mask1({os.path.basename(m1)})" + (f" + Mask2({os.path.basename(m2)})" if m2 else "") + f"  |  {a_img.size[0]}x{a_img.size[1]}")
+        self._ensure_fuselage_defaults()
         self._set_fit_zoom(a_img.size); self._schedule_preview()
+        self._last_color_base = None
+        self._last_color_mode = None
+        self._last_color_rect = None
+        self._last_full_composite = self._images['albedo_full']  # for size refs
 
     # adjustments & preview ----------------------------------------------
     def reset_all(self):
@@ -413,73 +497,231 @@ class App(tk.Tk):
     def _on_param_change(self, _): self._schedule_preview()
 
     def _schedule_preview(self):
-        if self._debounce_job is not None: self.after_cancel(self._debounce_job)
-        self._debounce_job = self.after(60, self.update_preview)
+        if self._debounce_job is not None:
+            self.after_cancel(self._debounce_job)
+        self._debounce_job = self.after(100, self.update_preview)  # was 60
 
-    def _build_weights(self, size: Tuple[int, int]) -> Dict[str, np.ndarray]:
+    def _build_weights(self, size: Tuple[int, int], crop: Optional[Tuple[int, int, int, int]] = None) -> Dict[
+        str, np.ndarray]:
+        """Build weight arrays at *size*. If *crop* is provided, crop masks first."""
         w: Dict[str, np.ndarray] = {}
-        def add(prefix: str, img: Optional[Image.Image]):
-            if img is None: return
-            r,g,b = (img if img.size == size else img.resize(size, Image.BILINEAR)).split()
-            for ch_key, im in zip(("R","G","B"),(r,g,b)):
-                key = f"{prefix}_{ch_key}"; arr = np.asarray(im, dtype=np.float32)/255.0
-                if self.channels[key].invert.get(): arr = 1.0 - arr
+
+        def prep(img: Optional[Image.Image]) -> Optional[Image.Image]:
+            if img is None:
+                return None
+            im = img
+            if crop is not None:
+                im = im.crop(crop)
+            if im.size != size:
+                im = im.resize(size, Image.BILINEAR)
+            return im
+
+        m1 = prep(self._images['mask1_rgb'])
+        m2 = prep(self._images['mask2_rgb'])
+
+        def add(prefix: str, im: Optional[Image.Image]):
+            if im is None:
+                return
+            r, g, b = im.split()
+            for ch_key, ch_im in zip(("R", "G", "B"), (r, g, b)):
+                key = f"{prefix}_{ch_key}"
+                arr = np.asarray(ch_im, dtype=np.float32) / 255.0
+                if self.channels[key].invert.get():
+                    arr = 1.0 - arr
                 w[key] = arr
-        add("M1", self._images['mask1_rgb']); add("M2", self._images['mask2_rgb'])
+
+        add("M1", m1)
+        add("M2", m2)
         return w
+
+    def _clone_overlay_for_roi(
+            self,
+            full_w: int,
+            full_h: int,
+            pan_x: int,
+            pan_y: int,
+            roi_w: int,
+            roi_h: int,
+    ):
+        """Create a TextOverlay copy with pos normalized to the current ROI (crop)."""
+        to_src = self.text_overlay
+        to = TextOverlay()
+        # copy fields
+        to.enabled = to_src.enabled
+        to.child_enabled = to_src.child_enabled
+        to.text = to_src.text
+        to.font_family = to_src.font_family
+        to.font_style = to_src.font_style
+        to.font_size_px = to_src.font_size_px
+        to.scale = to_src.scale
+        to.rotation_deg = to_src.rotation_deg
+        to.fill_hex = to_src.fill_hex
+        to.stroke_hex = to_src.stroke_hex
+        to.stroke_width = to_src.stroke_width
+        to.stroke_gap = getattr(to_src, "stroke_gap", 0)
+        to.stroke_offset_x = to_src.stroke_offset_x
+        to.stroke_offset_y = to_src.stroke_offset_y
+        to.parent_mirror_h = getattr(to_src, "parent_mirror_h", False)
+        to.child_mirror_h = getattr(to_src, "child_mirror_h", False)
+
+        # remap normalized positions from full image to ROI
+        def remap(nxy):
+            fx = nxy[0] * full_w
+            fy = nxy[1] * full_h
+            nx = (fx - pan_x) / max(1, roi_w)
+            ny = (fy - pan_y) / max(1, roi_h)
+            return (min(1.0, max(0.0, nx)), min(1.0, max(0.0, ny)))
+
+        to.pos_norm = remap(to_src.pos_norm)
+        to.child_pos_norm = remap(to_src.child_pos_norm)
+        return to
+
+    def _build_weights_roi(self, size_xy, m1_img, m2_img, channels_vals=None):
+        """Build weights dict for already-cropped & resized masks (size == size_xy)."""
+        w = {}
+
+        def add(prefix: str, img: Optional[Image.Image]):
+            if img is None:
+                return
+            if img.size != size_xy:
+                img = img.resize(size_xy, Image.BILINEAR)
+            r, g, b = img.split()
+            for ch_key, im in zip(("R", "G", "B"), (r, g, b)):
+                key = f"{prefix}_{ch_key}"
+                arr = np.asarray(im, dtype=np.float32) / 255.0
+                inv = (channels_vals.get(key, (0, 0, 0, False))[3]
+                       if channels_vals is not None else self.channels[key].invert.get())
+                if inv:
+                    arr = 1.0 - arr
+                w[key] = arr
+
+        add("M1", m1_img)
+        add("M2", m2_img)
+        return w
+
+    def _scale_box_add(self, bb, sx: float, sy: float, add_xy=(0, 0)):
+        """Scale a bbox by (sx, sy) and then add (dx, dy) — returns full-image coords."""
+        if not bb:
+            return None
+        x0, y0, x1, y1 = bb
+        dx, dy = add_xy
+        return (
+            int(round(x0 * sx + dx)),
+            int(round(y0 * sy + dy)),
+            int(round(x1 * sx + dx)),
+            int(round(y1 * sy + dy)),
+        )
 
     def update_preview(self):
         self._debounce_job = None
-        if not self._images: return
+        if not self._images:
+            return
         try:
-            full = self._images['albedo_full'].copy()
-            weights = self._build_weights(full.size)
-            keys = list(weights.keys())
-            # Safe reads for channel entries (avoid TclError on empty strings)
+            base_full = self._images['albedo_full']
+            full_w, full_h = base_full.size
+            self._last_full_composite = base_full  # keep full size for hit-testing math
+
+            # read current channel values safely
             def sget(dv, default=0.0):
                 try:
                     v = dv.get()
-                    if v in ("", None): return default
+                    if v in ("", None):
+                        return default
                     return float(v)
                 except Exception:
                     return default
-            hue = {k: sget(self.channels[k].hue, 0.0) for k in keys}
-            sat = {k: sget(self.channels[k].sat, 0.0) for k in keys}
-            val = {k: sget(self.channels[k].val, 0.0) for k in keys}
 
-            out_full = apply_hsv_adjust_multi(full.convert("RGB"), weights, hue, sat, val)
+            z = float(self._zoom_var.get() or 1.0)
+            self._disp_scale = max(1e-6, z)
+            fit_z = self._compute_fit_zoom((full_w, full_h))
 
-            # text overlay only on fuselage & wings assets
-            if self._text_allowed_for_current:
-                out_full, self._bbox_parent, self._bbox_child = compose_text(out_full, self.text_overlay, self.font_map)
-            else:
-                self._bbox_parent = self._bbox_child = None
+            # Common: pick masks (full size)
+            m1_full = self._images.get('mask1_rgb')
+            m2_full = self._images.get('mask2_rgb')
 
-            self._last_full_composite = out_full
-
-            # compute display image with pan/zoom
-            z = float(self._zoom_var.get() or 1.0); self._disp_scale = max(1e-6, z)
-            fit_z = self._compute_fit_zoom(out_full.size)
             if z <= fit_z + 1e-6:
-                # whole image fits: reset pan to (0,0)
-                self._pan_x = self._pan_y = 0
-                disp_w = max(1, int(out_full.width * z))
-                disp_h = max(1, int(out_full.height * z))
-                disp = out_full.resize((disp_w, disp_h), Image.LANCZOS)
+                # ---- FAST PATH (zoomed-out): process at display size, not full-res ----
+                disp_w = max(1, int(round(full_w * z)))
+                disp_h = max(1, int(round(full_h * z)))
+
+                albedo_disp = base_full.resize((disp_w, disp_h), Image.LANCZOS)
+                # build weights at display size
+                weights = self._build_weights_roi((disp_w, disp_h), m1_full, m2_full)
+
+                keys = list(weights.keys())
+                hue = {k: sget(self.channels[k].hue, 0.0) for k in keys}
+                sat = {k: sget(self.channels[k].sat, 0.0) for k in keys}
+                val = {k: sget(self.channels[k].val, 0.0) for k in keys}
+
+                out_disp = apply_hsv_adjust_multi(albedo_disp.convert("RGB"), weights, hue, sat, val)
+
+                # text (allowed only for fuselage/wings as before)
+                if self._text_allowed_for_current:
+                    out_disp, bb_p_small, bb_c_small = compose_text(out_disp, self.text_overlay, self.font_map)
+                    # scale small bboxes to full-space (for hit-testing/selection overlay math)
+                    sx = full_w / max(1.0, disp_w)
+                    sy = full_h / max(1.0, disp_h)
+                    self._bbox_parent = self._scale_box_add(bb_p_small, sx, sy, (0, 0))
+                    self._bbox_child = self._scale_box_add(bb_c_small, sx, sy, (0, 0))
+                else:
+                    self._bbox_parent = self._bbox_child = None
+
+                disp = out_disp  # already at display size
+
             else:
-                # crop viewport from full image using pan
+                # ---- FAST PATH (zoomed-in): process ONLY current viewport ROI ----
                 vw = max(1, int(round(self._preview_size[0] / z)))
                 vh = max(1, int(round(self._preview_size[1] / z)))
-                max_x = max(0, out_full.width - vw); max_y = max(0, out_full.height - vh)
+                max_x = max(0, full_w - vw)
+                max_y = max(0, full_h - vh)
                 self._pan_x = min(max(0, self._pan_x), max_x)
                 self._pan_y = min(max(0, self._pan_y), max_y)
-                crop = out_full.crop((self._pan_x, self._pan_y, self._pan_x + vw, self._pan_y + vh))
-                disp = crop.resize(self._preview_size, Image.LANCZOS)
 
+                x0, y0 = self._pan_x, self._pan_y
+                x1, y1 = x0 + vw, y0 + vh
+
+                # crop ROI from full images
+                roi_albedo = base_full.crop((x0, y0, x1, y1))
+                roi_m1 = m1_full.crop((x0, y0, x1, y1)) if m1_full is not None else None
+                roi_m2 = m2_full.crop((x0, y0, x1, y1)) if m2_full is not None else None
+
+                # resize ROI to preview canvas size (process at screen resolution)
+                disp_w, disp_h = self._preview_size
+                albedo_disp = roi_albedo.resize((disp_w, disp_h), Image.LANCZOS)
+                roi_m1_disp = roi_m1.resize((disp_w, disp_h), Image.BILINEAR) if roi_m1 is not None else None
+                roi_m2_disp = roi_m2.resize((disp_w, disp_h), Image.BILINEAR) if roi_m2 is not None else None
+
+                # weights at preview size
+                weights = self._build_weights_roi((disp_w, disp_h), roi_m1_disp, roi_m2_disp)
+
+                keys = list(weights.keys())
+                hue = {k: sget(self.channels[k].hue, 0.0) for k in keys}
+                sat = {k: sget(self.channels[k].sat, 0.0) for k in keys}
+                val = {k: sget(self.channels[k].val, 0.0) for k in keys}
+
+                out_disp = apply_hsv_adjust_multi(albedo_disp.convert("RGB"), weights, hue, sat, val)
+
+                if self._text_allowed_for_current:
+                    # remap overlay positions to ROI-local normalized coords
+                    to_local = self._clone_overlay_for_roi(full_w, full_h, x0, y0, vw, vh)
+                    out_disp, bb_p_local, bb_c_local = compose_text(out_disp, to_local, self.font_map)
+                    # map local (disp) bboxes back to full-space: scale then add pan offset
+                    sx = vw / max(1.0, disp_w)
+                    sy = vh / max(1.0, disp_h)
+                    self._bbox_parent = self._scale_box_add(bb_p_local, sx, sy, (x0, y0))
+                    self._bbox_child = self._scale_box_add(bb_c_local, sx, sy, (x0, y0))
+                else:
+                    self._bbox_parent = self._bbox_child = None
+
+                disp = out_disp  # already preview-sized
+
+            # draw selection boxes on the display image
             self._overlay_selection(disp)
             self._last_preview_img_size = disp.size
             self.after(0, self._update_preview_padding_in_label, disp.size)
-            self._preview_photo = ImageTk.PhotoImage(disp); self.preview_label.configure(image=self._preview_photo)
+            self._preview_photo = ImageTk.PhotoImage(disp)
+            self.preview_label.configure(image=self._preview_photo)
+
         except Exception as e:
             self.status_var.set(f"Error updating preview: {e}")
 
@@ -487,32 +729,13 @@ class App(tk.Tk):
         lw = max(1, self.preview_label.winfo_width()); lh = max(1, self.preview_label.winfo_height())
         iw, ih = img_size; pad_x = max(0, (lw - iw)//2); pad_y = max(0, (lh - ih)//2); self._last_preview_padding = (pad_x, pad_y)
 
-    def _on_zoom_change(self):
-        base = self._last_full_composite
-        if base is None:
-            self.update_preview(); return
-        try:
-            z = float(self._zoom_var.get() or 1.0); self._disp_scale = max(1e-6, z)
-            fit_z = self._compute_fit_zoom(base.size)
-            if z <= fit_z + 1e-6:
-                self._pan_x = self._pan_y = 0
-                disp = base.resize((max(1, int(base.width * z)), max(1, int(base.height * z))), Image.LANCZOS)
-            else:
-                vw = max(1, int(round(self._preview_size[0] / z)))
-                vh = max(1, int(round(self._preview_size[1] / z)))
-                max_x = max(0, base.width - vw); max_y = max(0, base.height - vh)
-                self._pan_x = min(max(0, self._pan_x), max_x)
-                self._pan_y = min(max(0, self._pan_y), max_y)
-                crop = base.crop((self._pan_x, self._pan_y, self._pan_x + vw, self._pan_y + vh))
-                disp = crop.resize(self._preview_size, Image.LANCZOS)
+    def _on_preview_label_configure(self, _e):
+        if self._last_preview_img_size:
+            self._update_preview_padding_in_label(self._last_preview_img_size)
 
-            self._overlay_selection(disp)
-            self._last_preview_img_size = disp.size
-            self.after(0, self._update_preview_padding_in_label, disp.size)
-            self._preview_photo = ImageTk.PhotoImage(disp)
-            self.preview_label.configure(image=self._preview_photo)
-        except Exception as e:
-            self.status_var.set(f"Zoom error: {e}")
+    def _on_zoom_change(self):
+        # Recompute using the fast ROI/downscale pipeline
+        self._schedule_preview()
 
     # mouse interactions --------------------------------------------------
     def _overlay_selection(self, disp_img: Image.Image) -> None:
@@ -532,15 +755,19 @@ class App(tk.Tk):
         if self._active_text == "child" and cb: draw.rectangle(cb, outline=(255,0,0,255), width=2)
 
     def _label_to_image_coords(self, x: int, y: int):
-        if not self._last_preview_img_size or self._last_full_composite is None: return None
-        iw, ih = self._last_preview_img_size; pad_x, pad_y = self._last_preview_padding
+        if not self._last_preview_img_size or self._images is None:
+            return None
+        iw, ih = self._last_preview_img_size
+        pad_x, pad_y = self._last_preview_padding
         xi, yi = x - pad_x, y - pad_y
-        if xi < 0 or yi < 0 or xi >= iw or yi >= ih: return None
+        if xi < 0 or yi < 0 or xi >= iw or yi >= ih:
+            return None
         z = max(self._disp_scale, 1e-6)
         xf = int(round(self._pan_x + xi / z))
         yf = int(round(self._pan_y + yi / z))
-        fw, fh = self._last_full_composite.size
-        if xf < 0 or yf < 0 or xf >= fw or yf >= fh: return None
+        fw, fh = self._images['albedo_full'].size
+        if xf < 0 or yf < 0 or xf >= fw or yf >= fh:
+            return None
         return (xf, yf)
 
     def _hit(self, xi: int, yi: int):
@@ -553,32 +780,51 @@ class App(tk.Tk):
         return None
 
     def _on_mouse_down(self, e):
-        # space+left => start pan
         if self._space_down:
             self._panning_left = True
             self._on_pan_start(e)
             return
-        if not (self.text_overlay.enabled and self._text_allowed_for_current): return
+        if not (self.text_overlay.enabled and self._text_allowed_for_current):
+            return
         pt = self._label_to_image_coords(e.x, e.y)
-        if pt is None: return
-        xi, yi = pt; hit = self._hit(xi, yi)
-        if hit is None: return
-        self._active_text = hit; fw, fh = self._last_full_composite.size
-        nx, ny = xi/fw, yi/fh; to = self.text_overlay
+        if pt is None:
+            return
+        xi, yi = pt
+        hit = self._hit(xi, yi)
+        if hit is None:
+            return
+        self._active_text = hit
+        fw, fh = self._images['albedo_full'].size
+        nx, ny = xi / fw, yi / fh
+        to = self.text_overlay
         ox = nx - (to.pos_norm[0] if hit == "parent" else to.child_pos_norm[0])
         oy = ny - (to.pos_norm[1] if hit == "parent" else to.child_pos_norm[1])
-        self._drag_offset = (ox, oy); self._drag_active = True
+        self._drag_offset = (ox, oy)
+        self._drag_active = True
 
     def _on_mouse_drag(self, e):
         if self._panning_left:
-            self._on_pan_drag(e); return
-        if not (self.text_overlay.enabled and self._drag_active and self._text_allowed_for_current): return
+            self._on_pan_drag(e);
+            return
+        if not (self.text_overlay.enabled and self._drag_active and self._text_allowed_for_current):
+            return
         pt = self._label_to_image_coords(e.x, e.y)
-        if pt is None: return
-        fw, fh = self._last_full_composite.size; nx, ny = pt[0]/fw, pt[1]/fh
-        nx = min(1.0, max(0.0, nx - self._drag_offset[0])); ny = min(1.0, max(0.0, ny - self._drag_offset[1]))
-        if self._active_text == "child": self.text_overlay.child_pos_norm = (nx, ny)
-        else: self.text_overlay.pos_norm = (nx, ny)
+        if pt is None:
+            return
+        fw, fh = self._images['albedo_full'].size
+        nx, ny = pt[0] / fw, pt[1] / fh
+        nx = min(1.0, max(0.0, nx - self._drag_offset[0]))
+        ny = min(1.0, max(0.0, ny - self._drag_offset[1]))
+
+        if self._active_text == "parent" and self._is_current_fuselage():
+            (pnx, pny), (cnx, cny) = self._apply_fuselage_parent_move(nx, ny)
+            self.text_overlay.pos_norm = (pnx, pny)
+            self.text_overlay.child_pos_norm = (cnx, cny)
+        else:
+            if self._active_text == "child":
+                self.text_overlay.child_pos_norm = (nx, ny)
+            else:
+                self.text_overlay.pos_norm = (nx, ny)
         self._schedule_preview()
 
     def _on_mouse_up(self, _):

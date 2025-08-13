@@ -5,7 +5,7 @@ from typing import Dict, Tuple, Optional
 import pathlib
 import math
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter
+from PIL import Image, ImageDraw, ImageFont, ImageOps, ImageFilter, ImageChops
 
 # --- font preload --------------------------------------------------------
 
@@ -163,14 +163,52 @@ def _apply_transform(im: Image.Image, scale: float, rotation_deg: float, mirror_
         im = im.rotate(rotation_deg, resample=Image.BICUBIC, expand=True)
     return im
 
+def _dilate(mask: Image.Image, radius: int) -> Image.Image:
+    """Morphological dilation of an 8-bit mask using a square kernel."""
+    if radius <= 0:
+        return mask.copy()
+    from PIL import ImageFilter  # local import to avoid global changes
+    size = radius * 2 + 1  # must be odd
+    return mask.filter(ImageFilter.MaxFilter(size))
+def render_text_masks(
+    text: str,
+    font: ImageFont.ImageFont,
+    stroke_w: int,
+    _fill_hex: str,
+    _stroke_hex: str,
+    gap: int,
+) -> tuple[Image.Image, Image.Image, tuple[int, int, int, int]]:
+    """
+    Return (stroke_mask, fill_mask, bbox) as 8-bit L images.
 
-def render_text_masks(text: str, font: ImageFont.ImageFont, stroke_width: int, fill_hex: str, stroke_hex: str, stroke_gap: int) -> Tuple[Image.Image, Image.Image, Tuple[int,int,int,int]]:
-    """Return (stroke_mask, fill_mask, bbox) in local (untransformed) space."""
-    fill_mask = _text_mask(text, font)
-    stroke_mask = _stroke_from_mask(fill_mask, max(0, int(stroke_width)))
-    if stroke_gap > 0:
-        fill_mask = _erode_mask(fill_mask, int(stroke_gap))
-    bbox = (0, 0, fill_mask.width, fill_mask.height)
+    stroke_mask is computed as: dilate(fill, gap + stroke_w) - dilate(fill, gap)
+    which guarantees the gap sits OUTSIDE the fill boundary (no inward bite).
+    """
+    # Measure tight bbox using the glyph only (no stroke)
+    dummy = Image.new("L", (1, 1), 0)
+    d = ImageDraw.Draw(dummy)
+    bbox = d.textbbox((0, 0), text, font=font)
+    w = max(1, bbox[2] - bbox[0])
+    h = max(1, bbox[3] - bbox[1])
+
+    # Fill mask (anti-aliased glyph)
+    fill_mask = Image.new("L", (w, h), 0)
+    df = ImageDraw.Draw(fill_mask)
+    df.text((-bbox[0], -bbox[1]), text, font=font, fill=255)
+
+    gap = max(0, int(gap))
+    stroke_w = max(0, int(stroke_w))
+
+    if stroke_w == 0:
+        # No stroke: empty ring
+        stroke_mask = Image.new("L", (w, h), 0)
+        return stroke_mask, fill_mask, bbox
+
+    # Outside-only ring by dilating the fill mask
+    outer = _dilate(fill_mask, gap + stroke_w)
+    inner = _dilate(fill_mask, gap)
+    stroke_mask = ImageChops.subtract(outer, inner)
+
     return stroke_mask, fill_mask, bbox
 
 
