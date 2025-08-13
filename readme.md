@@ -111,5 +111,5 @@ Result is in `dist/`.
 
 ## License
 
-MIT (add your preferred license here).
+Jetstream FS copyright 2025
 
