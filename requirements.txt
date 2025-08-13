@@ -1,0 +1,4 @@
+# Runtime dependencies for CIS_paintkit
+# Keep in sync with README requirements
+Pillow>=10.0.0,<11
+numpy>=1.23
