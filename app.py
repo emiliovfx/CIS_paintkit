@@ -85,6 +85,31 @@ class App(tk.Tk):
         self._auto_set_project_root_and_scan()
         self.after(200, self._startup_flow)
 
+    # ---------- Safe getters & validators ----------
+    def _safe_get_int(self, var, fallback: int) -> int:
+        try:
+            v = var.get()
+            if v in ("", None):
+                return fallback
+            return int(float(v))
+        except Exception:
+            return fallback
+
+    def _safe_get_float(self, var, fallback: float) -> float:
+        try:
+            v = var.get()
+            if v in ("", None):
+                return fallback
+            return float(v)
+        except Exception:
+            return fallback
+
+    def _validate_int(self, proposed: str) -> bool:
+        return proposed == "" or re.fullmatch(r"-?\d+", proposed) is not None
+
+    def _validate_float(self, proposed: str) -> bool:
+        return proposed == "" or re.fullmatch(r"-?\d*\.?\d*", proposed) is not None
+
     # UI ------------------------------------------------------------------
     def _build_ui(self) -> None:
         top = ttk.Frame(self); top.pack(side=tk.TOP, fill=tk.X, padx=10, pady=8)
@@ -177,8 +202,8 @@ class App(tk.Tk):
         cvar = tk.BooleanVar(value=to.child_enabled); ttk.Checkbutton(parent, text="Enable mirrored child", variable=cvar, command=lambda: (setattr(to,"child_enabled",cvar.get()), self._schedule_preview())).grid(row=0, column=1, sticky="w", **pad)
 
         ttk.Label(parent, text="Text").grid(row=1, column=0, sticky="w", **pad)
-        tvar = tk.StringVar(value=to.text); ttk.Entry(parent, textvariable=tvar, width=40).grid(row=1, column=1, sticky="ew", **pad)
-        tvar.trace_add("write", lambda *_: (setattr(to, "text", tvar.get()), self._schedule_preview()))
+        self._text_var = tk.StringVar(value=to.text); ttk.Entry(parent, textvariable=self._text_var, width=40).grid(row=1, column=1, sticky="ew", **pad)
+        self._text_var.trace_add("write", lambda *_: (setattr(to, "text", self._text_var.get()), self._schedule_preview()))
 
         ttk.Label(parent, text="Font family").grid(row=2, column=0, sticky="w", **pad)
         self.font_combo = ttk.Combobox(parent, state="readonly", values=[]); self.font_combo.grid(row=2, column=1, sticky="ew", **pad)
@@ -197,9 +222,15 @@ class App(tk.Tk):
         self.font_combo.bind("<<ComboboxSelected>>", lambda *_: self._on_font_change())
         self.style_combo.bind("<<ComboboxSelected>>", lambda *_: self._on_style_change())
 
+        vcmd_i = (self.register(self._validate_int), "%P")
+        vcmd_f = (self.register(self._validate_float), "%P")
+
         ttk.Label(parent, text="Font size (px)").grid(row=4, column=0, sticky="w", **pad)
-        sz = tk.IntVar(value=to.font_size_px); ttk.Spinbox(parent, from_=6, to=512, textvariable=sz, width=7, command=lambda: self._on_size_change(sz)).grid(row=4, column=1, sticky="w", **pad)
-        sz.trace_add("write", lambda *_: self._on_size_change(sz))
+        self._var_font_size = tk.IntVar(value=to.font_size_px)
+        ttk.Spinbox(parent, from_=6, to=512, textvariable=self._var_font_size, width=7,
+                    validate="key", validatecommand=vcmd_i,
+                    command=lambda: self._on_size_change(self._var_font_size)).grid(row=4, column=1, sticky="w", **pad)
+        self._var_font_size.trace_add("write", lambda *_: self._on_size_change(self._var_font_size))
 
         ttk.Label(parent, text="Fill").grid(row=5, column=0, sticky="w", **pad)
         self.fill_chip = tk.Label(parent, text=" ", width=4, relief="groove", bg=to.fill_hex); self.fill_chip.grid(row=5, column=1, sticky="w", **pad)
@@ -210,35 +241,60 @@ class App(tk.Tk):
         self.stroke_chip.bind("<Button-1>", lambda _e: self._pick_stroke())
 
         ttk.Label(parent, text="Stroke width (px)").grid(row=7, column=0, sticky="w", **pad)
-        sw = tk.IntVar(value=to.stroke_width); ttk.Spinbox(parent, from_=0, to=50, textvariable=sw, width=7, command=lambda: self._on_sw_change(sw)).grid(row=7, column=1, sticky="w", **pad)
-        sw.trace_add("write", lambda *_: self._on_sw_change(sw))
+        self._var_sw = tk.IntVar(value=to.stroke_width)
+        ttk.Spinbox(parent, from_=0, to=50, textvariable=self._var_sw, width=7,
+                    validate="key", validatecommand=vcmd_i,
+                    command=lambda: self._on_sw_change(self._var_sw)).grid(row=7, column=1, sticky="w", **pad)
+        self._var_sw.trace_add("write", lambda *_: self._on_sw_change(self._var_sw))
 
         ttk.Label(parent, text="Stroke gap (px)").grid(row=8, column=0, sticky="w", **pad)
-        sg = tk.IntVar(value=getattr(to, 'stroke_gap', 0)); ttk.Spinbox(parent, from_=0, to=50, textvariable=sg, width=7, command=lambda: self._on_gap(sg)).grid(row=8, column=1, sticky="w", **pad)
-        sg.trace_add("write", lambda *_: self._on_gap(sg))
+        self._var_sg = tk.IntVar(value=getattr(to, 'stroke_gap', 0))
+        ttk.Spinbox(parent, from_=0, to=50, textvariable=self._var_sg, width=7,
+                    validate="key", validatecommand=vcmd_i,
+                    command=lambda: self._on_gap(self._var_sg)).grid(row=8, column=1, sticky="w", **pad)
+        self._var_sg.trace_add("write", lambda *_: self._on_gap(self._var_sg))
 
         ttk.Label(parent, text="Scale").grid(row=9, column=0, sticky="w", **pad)
-        sc = tk.DoubleVar(value=to.scale); ttk.Scale(parent, from_=0.1, to=5.0, orient=tk.HORIZONTAL, variable=sc, command=lambda _=None: self._on_scale(sc)).grid(row=9, column=1, sticky="ew", **pad)
-        ttk.Spinbox(parent, from_=0.1, to=5.0, increment=0.05, textvariable=sc, width=7, command=lambda: self._on_scale(sc)).grid(row=9, column=2, sticky="w", **pad)
-        sc.trace_add("write", lambda *_: self._on_scale(sc)); self._scale_var = sc
+        self._scale_var = tk.DoubleVar(value=to.scale)
+        ttk.Scale(parent, from_=0.1, to=5.0, orient=tk.HORIZONTAL, variable=self._scale_var,
+                  command=lambda _=None: self._on_scale(self._scale_var)).grid(row=9, column=1, sticky="ew", **pad)
+        ttk.Spinbox(parent, from_=0.1, to=5.0, increment=0.05, textvariable=self._scale_var, width=7,
+                    validate="key", validatecommand=vcmd_f,
+                    command=lambda: self._on_scale(self._scale_var)).grid(row=9, column=2, sticky="w", **pad)
+        self._scale_var.trace_add("write", lambda *_: self._on_scale(self._scale_var))
 
         ttk.Label(parent, text="Rotation (°)").grid(row=10, column=0, sticky="w", **pad)
-        rt = tk.DoubleVar(value=to.rotation_deg); ttk.Scale(parent, from_=-180, to=180, orient=tk.HORIZONTAL, variable=rt, command=lambda _=None: self._on_rot(rt)).grid(row=10, column=1, sticky="ew", **pad)
-        ttk.Spinbox(parent, from_=-180, to=180, increment=1, textvariable=rt, width=7, command=lambda: self._on_rot(rt)).grid(row=10, column=2, sticky="w", **pad)
-        rt.trace_add("write", lambda *_: self._on_rot(rt)); self._rot_var = rt
+        self._rot_var = tk.DoubleVar(value=to.rotation_deg)
+        ttk.Scale(parent, from_=-180, to=180, orient=tk.HORIZONTAL, variable=self._rot_var,
+                  command=lambda _=None: self._on_rot(self._rot_var)).grid(row=10, column=1, sticky="ew", **pad)
+        ttk.Spinbox(parent, from_=-180, to=180, increment=1, textvariable=self._rot_var, width=7,
+                    validate="key", validatecommand=vcmd_f,
+                    command=lambda: self._on_rot(self._rot_var)).grid(row=10, column=2, sticky="w", **pad)
+        self._rot_var.trace_add("write", lambda *_: self._on_rot(self._rot_var))
 
         ttk.Button(parent, text="Center Parent", command=self._center_text_parent).grid(row=11, column=0, sticky="w", **pad)
         ttk.Button(parent, text="Center Child", command=self._center_text_child).grid(row=11, column=1, sticky="w", **pad)
 
-        mp = tk.BooleanVar(value=to.parent_mirror_h); ttk.Checkbutton(parent, text="Mirror parent (H)", variable=mp, command=lambda: (setattr(to,"parent_mirror_h", mp.get()), self._schedule_preview())).grid(row=12, column=0, sticky="w", **pad)
-        mc = tk.BooleanVar(value=to.child_mirror_h); ttk.Checkbutton(parent, text="Mirror child (H)", variable=mc, command=lambda: (setattr(to,"child_mirror_h", mc.get()), self._schedule_preview())).grid(row=12, column=1, sticky="w", **pad)
+        self._var_parent_mirror = tk.BooleanVar(value=to.parent_mirror_h)
+        ttk.Checkbutton(parent, text="Mirror parent (H)", variable=self._var_parent_mirror,
+                        command=lambda: (setattr(to,"parent_mirror_h", self._var_parent_mirror.get()), self._schedule_preview())).grid(row=12, column=0, sticky="w", **pad)
+        self._var_child_mirror = tk.BooleanVar(value=to.child_mirror_h)
+        ttk.Checkbutton(parent, text="Mirror child (H)", variable=self._var_child_mirror,
+                        command=lambda: (setattr(to,"child_mirror_h", self._var_child_mirror.get()), self._schedule_preview())).grid(row=12, column=1, sticky="w", **pad)
 
         ttk.Label(parent, text="Stroke offset X").grid(row=13, column=0, sticky="w", **pad)
-        sox = tk.IntVar(value=to.stroke_offset_x); ttk.Spinbox(parent, from_=-200, to=200, textvariable=sox, width=7, command=lambda: self._on_sox(sox)).grid(row=13, column=1, sticky="w", **pad)
-        sox.trace_add("write", lambda *_: self._on_sox(sox))
+        self._var_sox = tk.IntVar(value=to.stroke_offset_x)
+        ttk.Spinbox(parent, from_=-200, to=200, textvariable=self._var_sox, width=7,
+                    validate="key", validatecommand=vcmd_i,
+                    command=lambda: self._on_sox(self._var_sox)).grid(row=13, column=1, sticky="w", **pad)
+        self._var_sox.trace_add("write", lambda *_: self._on_sox(self._var_sox))
+
         ttk.Label(parent, text="Stroke offset Y").grid(row=14, column=0, sticky="w", **pad)
-        soy = tk.IntVar(value=to.stroke_offset_y); ttk.Spinbox(parent, from_=-200, to=200, textvariable=soy, width=7, command=lambda: self._on_soy(soy)).grid(row=14, column=1, sticky="w", **pad)
-        soy.trace_add("write", lambda *_: self._on_soy(soy))
+        self._var_soy = tk.IntVar(value=to.stroke_offset_y)
+        ttk.Spinbox(parent, from_=-200, to=200, textvariable=self._var_soy, width=7,
+                    validate="key", validatecommand=vcmd_i,
+                    command=lambda: self._on_soy(self._var_soy)).grid(row=14, column=1, sticky="w", **pad)
+        self._var_soy.trace_add("write", lambda *_: self._on_soy(self._var_soy))
 
         parent.columnconfigure(1, weight=1)
 
@@ -251,18 +307,41 @@ class App(tk.Tk):
         self.style_combo.set(pick); self.text_overlay.font_style = pick
         self._schedule_preview()
 
-    def _on_style_change(self): self.text_overlay.font_style = self.style_combo.get() or "Regular"; self._schedule_preview()
-    def _on_size_change(self, var): self.text_overlay.font_size_px = max(1, int(var.get())); self._schedule_preview()
-    def _on_sw_change(self, var): self.text_overlay.stroke_width = max(0, int(var.get())); self._schedule_preview()
-    def _on_gap(self, var): self.text_overlay.stroke_gap = max(0, int(var.get())); self._schedule_preview()
-    def _on_scale(self, var): self.text_overlay.scale = max(0.05, float(var.get())); self._schedule_preview()
-    def _on_rot(self, var): self.text_overlay.rotation_deg = float(var.get()); self._schedule_preview()
-    def _on_sox(self, var): self.text_overlay.stroke_offset_x = int(var.get()); self._schedule_preview()
-    def _on_soy(self, var): self.text_overlay.stroke_offset_y = int(var.get()); self._schedule_preview()
+    def _on_style_change(self):
+        self.text_overlay.font_style = self.style_combo.get() or "Regular"; self._schedule_preview()
+
+    def _on_size_change(self, var):
+        cur = getattr(self.text_overlay, "font_size_px", 72)
+        self.text_overlay.font_size_px = max(1, self._safe_get_int(var, cur)); self._schedule_preview()
+
+    def _on_sw_change(self, var):
+        cur = getattr(self.text_overlay, "stroke_width", 0)
+        self.text_overlay.stroke_width = max(0, self._safe_get_int(var, cur)); self._schedule_preview()
+
+    def _on_gap(self, var):
+        cur = getattr(self.text_overlay, "stroke_gap", 0)
+        self.text_overlay.stroke_gap = max(0, self._safe_get_int(var, cur)); self._schedule_preview()
+
+    def _on_scale(self, var):
+        cur = getattr(self.text_overlay, "scale", 1.0)
+        self.text_overlay.scale = max(0.05, self._safe_get_float(var, cur)); self._schedule_preview()
+
+    def _on_rot(self, var):
+        cur = getattr(self.text_overlay, "rotation_deg", 0.0)
+        self.text_overlay.rotation_deg = self._safe_get_float(var, cur); self._schedule_preview()
+
+    def _on_sox(self, var):
+        cur = getattr(self.text_overlay, "stroke_offset_x", 0)
+        self.text_overlay.stroke_offset_x = self._safe_get_int(var, cur); self._schedule_preview()
+
+    def _on_soy(self, var):
+        cur = getattr(self.text_overlay, "stroke_offset_y", 0)
+        self.text_overlay.stroke_offset_y = self._safe_get_int(var, cur); self._schedule_preview()
 
     def _pick_fill(self):
         c = colorchooser.askcolor(color=self.text_overlay.fill_hex, title="Pick fill color")
         if c and c[1]: self.text_overlay.fill_hex = c[1]; self.fill_chip.configure(bg=self.text_overlay.fill_hex); self._schedule_preview()
+
     def _pick_stroke(self):
         c = colorchooser.askcolor(color=self.text_overlay.stroke_hex, title="Pick stroke color")
         if c and c[1]: self.text_overlay.stroke_hex = c[1]; self.stroke_chip.configure(bg=self.text_overlay.stroke_hex); self._schedule_preview()
@@ -274,10 +353,12 @@ class App(tk.Tk):
     def _compute_fit_zoom(self, img_size: Tuple[int, int]) -> float:
         maxw, maxh = self._preview_size; iw, ih = img_size
         return 1.0 if iw <= 0 or ih <= 0 else min(maxw/iw, maxh/ih, 1.0)
+
     def _set_fit_zoom(self, img_size: Tuple[int, int]) -> None:
         self._zoom_var.set(self._compute_fit_zoom(img_size))
+
     def _set_zoom(self, z: float) -> None:
-        z = max(0.05, min(2.0, float(z))); self._zoom_var.set(z); self._on_zoom_change();
+        z = max(0.05, min(2.0, float(z))); self._zoom_var.set(z); self._on_zoom_change()
         try: self.status_var.set(f"Zoom: {int(z*100)}%")
         except Exception: pass
 
@@ -330,6 +411,7 @@ class App(tk.Tk):
         self._schedule_preview()
 
     def _on_param_change(self, _): self._schedule_preview()
+
     def _schedule_preview(self):
         if self._debounce_job is not None: self.after_cancel(self._debounce_job)
         self._debounce_job = self.after(60, self.update_preview)
@@ -352,7 +434,19 @@ class App(tk.Tk):
         try:
             full = self._images['albedo_full'].copy()
             weights = self._build_weights(full.size)
-            keys = list(weights.keys()); hue = {k: self.channels[k].hue.get() for k in keys}; sat = {k: self.channels[k].sat.get() for k in keys}; val = {k: self.channels[k].val.get() for k in keys}
+            keys = list(weights.keys())
+            # Safe reads for channel entries (avoid TclError on empty strings)
+            def sget(dv, default=0.0):
+                try:
+                    v = dv.get()
+                    if v in ("", None): return default
+                    return float(v)
+                except Exception:
+                    return default
+            hue = {k: sget(self.channels[k].hue, 0.0) for k in keys}
+            sat = {k: sget(self.channels[k].sat, 0.0) for k in keys}
+            val = {k: sget(self.channels[k].val, 0.0) for k in keys}
+
             out_full = apply_hsv_adjust_multi(full.convert("RGB"), weights, hue, sat, val)
 
             # text overlay only on fuselage & wings assets
@@ -588,7 +682,6 @@ class App(tk.Tk):
         default_root = str(pathlib.Path(__file__).resolve().parent)
         if not self.project_root_var.get().strip():
             self.project_root_var.set(default_root)
-        # Always try to scan; if no assets, the user can browse manually
         try:
             self._scan_assets()
         except Exception as e:
@@ -598,19 +691,14 @@ class App(tk.Tk):
         assets: List[dict] = []
         if not base.exists():
             return assets
-
         for p in base.glob("*.png"):
             stem_low = p.stem.lower()
-
-            # Skip masks: *_PK<digits>.png (case-insensitive, suffix match)
+            # skip masks *_pk<digits>
             if re.search(r"_pk\d+$", stem_low):
                 continue
-
-            # Skip normals and spinner for now
+            # skip normals & spinner for now
             if "_nml" in stem_low or "spinner" in stem_low:
                 continue
-
-            # Find masks next to the albedo (case-insensitive)
             def rel(token: str) -> Optional[pathlib.Path]:
                 cand = p.with_name(f"{p.stem}_{token}{p.suffix}")
                 if cand.exists():
@@ -620,18 +708,9 @@ class App(tk.Tk):
                     if q.stem.lower() == token_low:
                         return q
                 return None
-
-            m1 = rel("PK1")
-            m2 = rel("PK2")
+            m1 = rel("PK1"); m2 = rel("PK2")
             key = str(p)
-            assets.append({
-                'key'   : key,
-                'name'  : f"{label_prefix}: {p.stem}",
-                'albedo': p,
-                'm1'    : m1,
-                'm2'    : m2
-            })
-
+            assets.append({'key': key, 'name': f"{label_prefix}: {p.stem}", 'albedo': p, 'm1': m1, 'm2': m2})
         return assets
 
     def _scan_assets(self):
@@ -639,41 +718,39 @@ class App(tk.Tk):
         if not root:
             root = str(pathlib.Path(__file__).resolve().parent)
             self.project_root_var.set(root)
-
         r = pathlib.Path(root)
         interior = r / "Resources" / "Interior"
         exterior = r / "Resources" / "Exterior"
-
         found: List[dict] = []
         found += self._discover_in_dir(interior, "Interior")
         found += self._discover_in_dir(exterior, "Exterior")
-
         if not found:
-            messagebox.showwarning(
-                "No assets",
-                "No PNG albedos found in Resources/Interior or Resources/Exterior next to the app."
-            )
+            messagebox.showwarning("No assets", "No PNG albedos found in Resources/Interior or Resources/Exterior next to the app.")
             return
-
         self.assets = found
         names = [a['name'] for a in self.assets]
-
         if self.asset_combo:
             self.asset_combo.configure(values=names)
-            # Prefer Fuselage first if present
+            # prefer fuselage first if present
             default_idx = 0
             for i, a in enumerate(self.assets):
                 if "fuselage" in a["name"].lower():
                     default_idx = i
                     break
             self.asset_combo.set(names[default_idx])
-
         self._on_asset_change()
 
     def _capture_channels(self) -> dict:
         vals = {}
         for k, v in self.channels.items():
-            vals[k] = (v.hue.get(), v.sat.get(), v.val.get(), v.invert.get())
+            # safe read
+            try:
+                h = float(v.hue.get() or 0.0)
+                s = float(v.sat.get() or 0.0)
+                b = float(v.val.get() or 0.0)
+            except Exception:
+                h = s = b = 0.0
+            vals[k] = (h, s, b, v.invert.get())
         return vals
 
     def _apply_channels(self, vals: dict) -> None:
@@ -697,6 +774,78 @@ class App(tk.Tk):
         if 'child' in pos:
             to.child_pos_norm = tuple(pos['child'])
 
+    # ---- per-asset text props ----
+    def _capture_text_props(self) -> dict:
+        to = self.text_overlay
+        return {
+            'enabled': bool(to.enabled),
+            'child_enabled': bool(to.child_enabled),
+            'text': to.text,
+            'family': to.font_family,
+            'style': to.font_style,
+            'size_px': int(to.font_size_px),
+            'scale': float(to.scale),
+            'rotation': float(to.rotation_deg),
+            'fill': to.fill_hex,
+            'stroke': to.stroke_hex,
+            'stroke_width': int(to.stroke_width),
+            'stroke_gap': int(getattr(to, 'stroke_gap', 0)),
+            'stroke_offset': [int(to.stroke_offset_x), int(to.stroke_offset_y)],
+            'parent_mirror_h': bool(getattr(to, 'parent_mirror_h', False)),
+            'child_mirror_h': bool(getattr(to, 'child_mirror_h', False)),
+        }
+
+    def _apply_text_props(self, props: Optional[dict]) -> None:
+        if not props:
+            return
+        to = self.text_overlay
+        to.enabled = bool(props.get('enabled', to.enabled))
+        to.child_enabled = bool(props.get('child_enabled', to.child_enabled))
+        to.text = props.get('text', to.text)
+        to.font_family = props.get('family', to.font_family)
+        to.font_style = props.get('style', to.font_style)
+        to.font_size_px = int(props.get('size_px', to.font_size_px))
+        to.scale = float(props.get('scale', to.scale))
+        to.rotation_deg = float(props.get('rotation', to.rotation_deg))
+        to.fill_hex = props.get('fill', to.fill_hex)
+        to.stroke_hex = props.get('stroke', to.stroke_hex)
+        to.stroke_width = int(props.get('stroke_width', to.stroke_width))
+        to.stroke_gap = int(props.get('stroke_gap', getattr(to, 'stroke_gap', 0)))
+        so = props.get('stroke_offset', [to.stroke_offset_x, to.stroke_offset_y])
+        if isinstance(so, (list, tuple)) and len(so) == 2:
+            to.stroke_offset_x, to.stroke_offset_y = int(so[0]), int(so[1])
+        to.parent_mirror_h = bool(props.get('parent_mirror_h', getattr(to, 'parent_mirror_h', False)))
+        to.child_mirror_h = bool(props.get('child_mirror_h', getattr(to, 'child_mirror_h', False)))
+
+        # reflect in UI
+        if hasattr(self, "font_combo") and self.font_map:
+            fam = to.font_family
+            if fam not in self.font_map:
+                fam = sorted(self.font_map.keys())[0]
+                to.font_family = fam
+            self.font_combo.set(fam)
+            styles = sorted(self.font_map[fam].keys())
+            self.style_combo.configure(values=styles)
+            st = to.font_style if to.font_style in styles else ("Regular" if "Regular" in styles else styles[0])
+            to.font_style = st
+            self.style_combo.set(st)
+
+        if hasattr(self, "fill_chip"):
+            self.fill_chip.configure(bg=to.fill_hex)
+        if hasattr(self, "stroke_chip"):
+            self.stroke_chip.configure(bg=to.stroke_hex)
+
+        if hasattr(self, "_var_font_size"): self._var_font_size.set(to.font_size_px)
+        if hasattr(self, "_var_sw"): self._var_sw.set(to.stroke_width)
+        if hasattr(self, "_var_sg"): self._var_sg.set(getattr(to, 'stroke_gap', 0))
+        if hasattr(self, "_var_sox"): self._var_sox.set(to.stroke_offset_x)
+        if hasattr(self, "_var_soy"): self._var_soy.set(to.stroke_offset_y)
+        if hasattr(self, "_scale_var"): self._scale_var.set(to.scale)
+        if hasattr(self, "_rot_var"): self._rot_var.set(to.rotation_deg)
+        if hasattr(self, "_text_var"): self._text_var.set(to.text)
+        if hasattr(self, "_var_parent_mirror"): self._var_parent_mirror.set(bool(getattr(to, 'parent_mirror_h', False)))
+        if hasattr(self, "_var_child_mirror"): self._var_child_mirror.set(bool(getattr(to, 'child_mirror_h', False)))
+
     def _asset_role(self, asset: dict) -> str:
         n = asset['name'].lower()
         if 'fuselage' in n: return 'FUSELAGE'
@@ -712,11 +861,12 @@ class App(tk.Tk):
         asset = next((a for a in self.assets if a['name'] == sel_name), None)
         if not asset:
             return
-        # store previous
+        # store previous asset state
         if self.current_asset_key:
             st_prev = self.asset_states.get(self.current_asset_key, {})
             st_prev['channels'] = self._capture_channels()
             st_prev['text_pos'] = self._capture_text_pos()
+            st_prev['text_props'] = self._capture_text_props()
             self.asset_states[self.current_asset_key] = st_prev
         # switch
         self.current_asset_key = asset['key']
@@ -727,6 +877,7 @@ class App(tk.Tk):
         st = self.asset_states.get(self.current_asset_key, {})
         self._apply_channels(st.get('channels', {}))
         self._apply_text_pos(st.get('text_pos', None))
+        self._apply_text_props(st.get('text_props', None))
         self._try_load_all()
 
     # saving --------------------------------------------------------------
@@ -767,9 +918,10 @@ class App(tk.Tk):
             return w
         weights = build_weights(a_img.size)
         keys = list(weights.keys())
-        hue = {k: (channels_vals.get(k,(0,0,0,False))[0] if channels_vals is not None else self.channels[k].hue.get()) for k in keys}
-        sat = {k: (channels_vals.get(k,(0,0,0,False))[1] if channels_vals is not None else self.channels[k].sat.get()) for k in keys}
-        val = {k: (channels_vals.get(k,(0,0,0,False))[2] if channels_vals is not None else self.channels[k].val.get()) for k in keys}
+        # choose values from override or current UI
+        hue = {k: (channels_vals.get(k,(0,0,0,False))[0] if channels_vals is not None else self._safe_get_float(self.channels[k].hue, 0.0)) for k in keys}
+        sat = {k: (channels_vals.get(k,(0,0,0,False))[1] if channels_vals is not None else self._safe_get_float(self.channels[k].sat, 0.0)) for k in keys}
+        val = {k: (channels_vals.get(k,(0,0,0,False))[2] if channels_vals is not None else self._safe_get_float(self.channels[k].val, 0.0)) for k in keys}
         out_rgb = apply_hsv_adjust_multi(a_img.convert("RGB"), weights, hue, sat, val)
         if allow_text:
             out_rgb, _, _ = compose_text(out_rgb, self.text_overlay, self.font_map)
@@ -784,16 +936,29 @@ class App(tk.Tk):
             return
         self.status_var.set("Saving all assets…"); self.update_idletasks()
         ok = 0; errs = []
-        # fuselage channel baseline for propagation
+
+        # snapshot current UI text state to restore later
+        cur_props = self._capture_text_props()
+        cur_pos = self._capture_text_pos()
+
         fuselage = next((a for a in self.assets if self._asset_role(a) == 'FUSELAGE'), None)
         fuselage_vals = self.asset_states.get(fuselage['key'], {}).get('channels') if fuselage else None
+
         for a in self.assets:
             try:
                 role = self._asset_role(a)
                 vals = self.asset_states.get(a['key'], {}).get('channels')
                 allow_text = role in ('FUSELAGE','WINGS')
+
+                # propagate HSV only (not text props)
                 if self.propagate_external_var.get() and role in ('COWLINGS','WINGS') and fuselage_vals:
                     vals = fuselage_vals
+
+                # apply this asset's text state (props + pos) for rendering
+                st = self.asset_states.get(a['key'], {})
+                self._apply_text_pos(st.get('text_pos', None))
+                self._apply_text_props(st.get('text_props', None))
+
                 final = self._render_full_for_paths(a['albedo'], a.get('m1'), a.get('m2'), vals, allow_text=allow_text)
                 out_path = out_dir / a['albedo'].name
                 if out_path.exists():
@@ -803,11 +968,17 @@ class App(tk.Tk):
                 ok += 1
             except Exception as e:
                 errs.append(f"{a['name']}: {e}")
+
+        # restore UI text state
+        self._apply_text_pos(cur_pos)
+        self._apply_text_props(cur_props)
+
         # write JSON config
         try:
             self._save_livery_config(out_dir)
         except Exception as e:
             errs.append(f"Config save: {e}")
+
         msg = f"Saved {ok} file(s) to {out_dir}"
         if errs:
             msg += "\nErrors:\n" + "\n".join(errs)
@@ -865,13 +1036,15 @@ class App(tk.Tk):
 
     # livery config -------------------------------------------------------
     def _save_livery_config(self, out_objects_dir: pathlib.Path) -> None:
-        """Write livery.json with per-asset channels and text positions, plus common text settings."""
+        """Write livery.json with per-asset channels, text positions, and text properties."""
         # ensure current asset state captured
         if self.current_asset_key:
             st_prev = self.asset_states.get(self.current_asset_key, {})
             st_prev['channels'] = self._capture_channels()
             st_prev['text_pos'] = self._capture_text_pos()
+            st_prev['text_props'] = self._capture_text_props()
             self.asset_states[self.current_asset_key] = st_prev
+
         assets_state: Dict[str, dict] = {}
         for a in self.assets:
             st = self.asset_states.get(a['key'], {})
@@ -880,7 +1053,9 @@ class App(tk.Tk):
                 'albedo': a['albedo'].name,
                 'channels': st.get('channels', {}),
                 'text_pos': st.get('text_pos', {'parent': self.text_overlay.pos_norm, 'child': self.text_overlay.child_pos_norm}),
+                'text_props': st.get('text_props', self._capture_text_props()),
             }
+
         data = {
             'project_root': self.project_root_var.get().strip(),
             'aircraft_root': self.aircraft_root_var.get().strip(),
@@ -888,21 +1063,6 @@ class App(tk.Tk):
             'propagate_fuselage': bool(self.propagate_external_var.get()),
             'fonts_dir': self.fonts_dir_var.get().strip(),
             'assets': assets_state,
-            'text_overlay_common': {
-                'family': self.text_overlay.font_family,
-                'style': self.text_overlay.font_style,
-                'size_px': self.text_overlay.font_size_px,
-                'scale': self.text_overlay.scale,
-                'rotation': self.text_overlay.rotation_deg,
-                'fill': self.text_overlay.fill_hex,
-                'stroke': self.text_overlay.stroke_hex,
-                'stroke_width': self.text_overlay.stroke_width,
-                'stroke_gap': getattr(self.text_overlay, 'stroke_gap', 0),
-                'stroke_offset': [self.text_overlay.stroke_offset_x, self.text_overlay.stroke_offset_y],
-                'parent_mirror_h': getattr(self.text_overlay, 'parent_mirror_h', False),
-                'child_enabled': getattr(self.text_overlay, 'child_enabled', False),
-                'child_mirror_h': getattr(self.text_overlay, 'child_mirror_h', False),
-            }
         }
         cfg = out_objects_dir.parent / 'livery.json'
         with open(cfg, 'w', encoding='utf-8') as f:
@@ -915,27 +1075,10 @@ class App(tk.Tk):
         self.aircraft_root_var.set(data.get('aircraft_root', self.aircraft_root_var.get()))
         self.propagate_external_var.set(bool(data.get('propagate_fuselage', True)))
         self.fonts_dir_var.set(data.get('fonts_dir', self.fonts_dir_var.get()))
-        to = data.get('text_overlay_common', {})
-        self.text_overlay.font_family = to.get('family', self.text_overlay.font_family)
-        self.text_overlay.font_style = to.get('style', self.text_overlay.font_style)
-        self.text_overlay.font_size_px = int(to.get('size_px', self.text_overlay.font_size_px))
-        self.text_overlay.scale = float(to.get('scale', self.text_overlay.scale))
-        self.text_overlay.rotation_deg = float(to.get('rotation', self.text_overlay.rotation_deg))
-        self.text_overlay.fill_hex = to.get('fill', self.text_overlay.fill_hex)
-        self.text_overlay.stroke_hex = to.get('stroke', self.text_overlay.stroke_hex)
-        self.text_overlay.stroke_width = int(to.get('stroke_width', self.text_overlay.stroke_width))
-        self.text_overlay.stroke_gap = int(to.get('stroke_gap', getattr(self.text_overlay, 'stroke_gap', 0)))
-        so = to.get('stroke_offset', [self.text_overlay.stroke_offset_x, self.text_overlay.stroke_offset_y])
-        if isinstance(so, (list, tuple)) and len(so) == 2:
-            self.text_overlay.stroke_offset_x, self.text_overlay.stroke_offset_y = int(so[0]), int(so[1])
-        self.text_overlay.parent_mirror_h = bool(to.get('parent_mirror_h', getattr(self.text_overlay, 'parent_mirror_h', False)))
-        self.text_overlay.child_enabled = bool(to.get('child_enabled', getattr(self.text_overlay, 'child_enabled', False)))
-        self.text_overlay.child_mirror_h = bool(to.get('child_mirror_h', getattr(self.text_overlay, 'child_mirror_h', False)))
-        # per-asset states by name or albedo filename
+
         assets_map: Dict[str, dict] = data.get('assets', {})
         for a in self.assets:
             st = None
-            # prefer exact key match (path), else by name, else by albedo filename
             if a['key'] in assets_map:
                 st = assets_map[a['key']]
             else:
@@ -947,8 +1090,10 @@ class App(tk.Tk):
                 self.asset_states[a['key']] = {
                     'channels': st.get('channels', {}),
                     'text_pos': st.get('text_pos', None),
+                    'text_props': st.get('text_props', None),
                 }
-        # refresh UI selection
+
+        # apply for currently selected asset
         if self.asset_combo and self.asset_combo.get():
             self._on_asset_change()
         self._schedule_preview()
